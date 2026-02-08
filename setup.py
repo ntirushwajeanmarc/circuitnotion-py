@@ -6,16 +6,16 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="circuitnotion",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="ntirushwa Jean Marc",
+    author_email="ntirushwajeanmarc@gmail.com",
     description="IoT library for connecting Raspberry Pi to CircuitNotion platform",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/circuitnotion-py",
+    url="https://github.com/ntirushwajeanmarc/circuitnotion-py",
     project_urls={
-        "Bug Tracker": "https://github.com/yourusername/circuitnotion-py/issues",
-        "Documentation": "https://github.com/yourusername/circuitnotion-py#readme",
-        "Source Code": "https://github.com/yourusername/circuitnotion-py",
+        "Bug Tracker": "https://github.com/ntirushwajeanmarc/circuitnotion-py/issues",
+        "Documentation": "https://github.com/ntirushwajeanmarc/circuitnotion-py#readme",
+        "Source Code": "https://github.com/ntirushwajeanmarc/circuitnotion-py",
     },
     packages=find_packages(),
     classifiers=[
