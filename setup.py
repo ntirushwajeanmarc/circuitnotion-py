@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="circuitnotion",
-    version="1.0.0",
+    version="1.2.0",
     author="ntirushwa Jean Marc",
     author_email="ntirushwajeanmarc@gmail.com",
     description="IoT library for connecting Raspberry Pi to CircuitNotion platform",
