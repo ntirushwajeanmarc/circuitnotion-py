@@ -1,11 +1,15 @@
 import asyncio
-import websockets
 import json
 import logging
+import ssl
+import time
+import urllib.error
+import urllib.request
 from typing import Callable, Optional, Dict, List, Any
 from dataclasses import dataclass
 from enum import Enum
-import time
+
+import websockets
 
 try:
     import RPi.GPIO as GPIO
@@ -36,6 +40,12 @@ class DeviceMapping:
     is_digital: bool
     name: str = ""
     inverted: bool = False
+
+
+# Default Gate server – user can override in begin()
+DEFAULT_HOST = "iot.circuitnotion.com"
+DEFAULT_PORT = 443
+DEFAULT_PATH = "/api/ws"
 
 
 class CircuitNotionSensor:
@@ -80,12 +90,12 @@ class CircuitNotionSensor:
 
 
 class CircuitNotion:
-    VERSION = "1.0.0"
+    VERSION = "1.3.0"
 
     def __init__(self):
-        self.host = ""
-        self.port = 443
-        self.path = "/"
+        self.host = DEFAULT_HOST
+        self.port = DEFAULT_PORT
+        self.path = DEFAULT_PATH
         self.api_key = ""
         self.microcontroller_name = ""
         self.use_ssl = True
@@ -97,7 +107,7 @@ class CircuitNotion:
         self.device_mappings: List[DeviceMapping] = []
         self.sensors: List[CircuitNotionSensor] = []
         
-        self.device_control_callback: Optional[Callable[[str, str], None]] = None
+        self.device_control_callback: Optional[Callable[[str, str, Optional[Dict[str, str]]], None]] = None
         self.log_callback: Optional[Callable[[str], None]] = None
         self.connection_callback: Optional[Callable[[bool], None]] = None
         
@@ -109,20 +119,50 @@ class CircuitNotion:
             GPIO.setmode(GPIO.BCM)
             GPIO.setwarnings(False)
 
-    def begin(self, host: str, port: int, path: str, api_key: str, 
-              microcontroller_name: str, use_ssl: bool = True):
-        """Initialize CircuitNotion connection parameters"""
-        self.host = host
-        self.port = port
-        self.path = path
-        self.api_key = api_key
-        self.microcontroller_name = microcontroller_name
-        self.use_ssl = use_ssl
+    def begin(
+        self,
+        host_or_api_key: str,
+        port_or_name: Optional[int] = None,
+        path: Optional[str] = None,
+        api_key: Optional[str] = None,
+        microcontroller_name: Optional[str] = None,
+        use_ssl: bool = True,
+    ):
+        """Configure connection. Two forms:
+        - Minimal: begin(api_key, microcontroller_name)  → default host/path/port (iot.circuitnotion.com).
+        - Full:    begin(host, port, path, api_key, microcontroller_name, use_ssl).
+        """
+        if (
+            port_or_name is not None
+            and isinstance(port_or_name, int)
+            and path is not None
+            and api_key is not None
+            and microcontroller_name is not None
+        ):
+            self.host = host_or_api_key
+            self.port = int(port_or_name)
+            self.path = path
+            self.api_key = api_key
+            self.microcontroller_name = microcontroller_name
+            self.use_ssl = use_ssl
+        else:
+            self.api_key = host_or_api_key
+            self.microcontroller_name = str(port_or_name) if port_or_name is not None else ""
+            self.host = DEFAULT_HOST
+            self.port = DEFAULT_PORT
+            self.path = DEFAULT_PATH
+            self.use_ssl = use_ssl
+            if path and "." in path:
+                self.host = path
+            if api_key is not None and isinstance(api_key, int):
+                self.port = api_key
+            if microcontroller_name and isinstance(microcontroller_name, str) and microcontroller_name.startswith("/"):
+                self.path = microcontroller_name
         self.log(f"CircuitNotion initialized v{self.VERSION}")
         self.log(f"Host: {self.host}:{self.port}")
 
-    def on_device_control(self, callback: Callable[[str, str], None]):
-        """Set callback for device control messages"""
+    def on_device_control(self, callback: Callable[[str, str, Optional[Dict[str, str]]], None]):
+        """Set callback for device control messages (device_serial, state, data). data may contain e.g. 'angle' for servos."""
         self.device_control_callback = callback
 
     def on_log(self, callback: Callable[[str], None]):
@@ -154,15 +194,18 @@ class CircuitNotion:
             GPIO.setup(pin, GPIO.OUT)
         self.log(f"Mapped analog device: {device_name} ({device_serial}) to pin {pin}")
 
-    def control_local_device(self, device_serial: str, state: str):
-        """Control a locally mapped device"""
+    def control_local_device(self, device_serial: str, state: str, data: Optional[Dict[str, str]] = None):
+        """Control a locally mapped device. data may contain e.g. 'angle' for servos (0-180)."""
+        data = data or {}
         mapping = next((m for m in self.device_mappings if m.serial == device_serial), None)
         if not mapping or not GPIO_AVAILABLE:
             return
-            
         if mapping.is_digital:
             on = state.lower() in ["on", "true", "1"]
-            GPIO.output(mapping.pin, (not on) if mapping.inverted else on)
+            GPIO.output(
+                mapping.pin,
+                (GPIO.LOW if on else GPIO.HIGH) if mapping.inverted else (GPIO.HIGH if on else GPIO.LOW),
+            )
             self.log(f"Set device {device_serial} to {state}")
 
     def add_sensor(self, sensor_type: str, device_serial: str, location: str,
@@ -291,9 +334,14 @@ class CircuitNotion:
                     await self.disconnect()
                         
                 elif msg_type == "device_control":
-                    device_serial = data.get("device_serial")
-                    state = data.get("state")
-                    self._handle_device_control(device_serial, state)
+                    device_serial = data.get("device_serial") or data.get("serial_number")
+                    state = data.get("state") or data.get("command", "")
+                    extra = data.get("data") or {}
+                    if isinstance(extra, dict):
+                        extra = {k: str(v) for k, v in extra.items()}
+                    else:
+                        extra = {}
+                    self._handle_device_control(device_serial, state, extra)
                     
                 elif msg_type == "ping":
                     await self.ws.send(json.dumps({"type": "pong"}))
@@ -308,12 +356,13 @@ class CircuitNotion:
             if self.connection_callback:
                 self.connection_callback(False)
 
-    def _handle_device_control(self, device_serial: str, state: str):
+    def _handle_device_control(self, device_serial: str, state: str, data: Optional[Dict[str, str]] = None):
         """Handle device control command"""
-        self.control_local_device(device_serial, state)
+        data = data or {}
+        self.control_local_device(device_serial, state, data)
         if self.device_control_callback:
-            self.device_control_callback(device_serial, state)
-        self.log(f"Device control: {device_serial} -> {state}")
+            self.device_control_callback(device_serial, state, data)
+        self.log(f"Device control: {device_serial} -> {state}" + (f" data={data}" if data else ""))
 
     async def _sensor_loop(self):
         """Continuously read and send sensor data"""
@@ -364,6 +413,28 @@ class CircuitNotion:
         else:
             print(f"[CircuitNotion] {message}")
 
+    def send_notification(
+        self,
+        template: str,
+        subject: Optional[str] = None,
+        body: Optional[str] = None,
+        **variables: str,
+    ) -> bool:
+        """Send email notification using stored host and API key.
+        Example: cn.send_notification("threshold_alert", DeviceName="Living Room",
+            SensorType="temperature", Value="35", Unit="°C", Threshold="30", Message="Above threshold.")
+        """
+        return SendNotification(
+            self.host,
+            self.api_key,
+            template,
+            subject=subject,
+            body=body,
+            port=self.port,
+            use_ssl=self.use_ssl,
+            **variables,
+        )
+
     def get_uptime(self) -> float:
         """Get connection uptime in seconds"""
         if self.connection_start_time > 0:
@@ -411,3 +482,80 @@ class CircuitNotion:
 
 # Global instance
 CN = CircuitNotion()
+
+
+def SendNotification(
+    host: str,
+    api_key: str,
+    template: str,
+    subject: Optional[str] = None,
+    body: Optional[str] = None,
+    port: Optional[int] = None,
+    use_ssl: bool = True,
+    **variables: str,
+) -> bool:
+    """
+    Send an email notification to the user associated with the API key.
+    The server sends the email to the user's registered address using the given template.
+
+    Args:
+        host: Gate server host (e.g. "iot.circuitnotion.com").
+        api_key: Microcontroller API key (from CircuitNotion dashboard).
+        template: One of "threshold_alert", "device_alert", "custom".
+        subject: Optional subject (for custom template).
+        body: Optional HTML body (for custom template).
+        port: Server port (default 443 if use_ssl, else 80).
+        use_ssl: Use HTTPS (default True).
+        **variables: Template variables, e.g. DeviceName, SensorType, Value, Unit, Threshold, Message for threshold_alert.
+
+    Returns:
+        True if the server accepted and sent the email, False otherwise.
+
+    Example (threshold alert):
+        SendNotification(
+            "iot.circuitnotion.com",
+            "your-api-key",
+            "threshold_alert",
+            DeviceName="Living Room Sensor",
+            SensorType="temperature",
+            Value="35.2",
+            Unit="°C",
+            Threshold="30",
+            Message="Temperature is above the safe threshold.",
+        )
+    """
+    if port is None:
+        port = 443 if use_ssl else 80
+    scheme = "https" if use_ssl else "http"
+    if (use_ssl and port == 443) or (not use_ssl and port == 80):
+        url = f"{scheme}://{host}/api/notify"
+    else:
+        url = f"{scheme}://{host}:{port}/api/notify"
+    payload = {
+        "template": template,
+        "variables": dict(variables),
+    }
+    if subject:
+        payload["subject"] = subject
+    if body:
+        payload["body"] = body
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+        },
+        method="POST",
+    )
+    try:
+        ctx = ssl.create_default_context() if use_ssl else None
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            return resp.status == 200 and json.loads(resp.read().decode()).get("sent") is True
+    except urllib.error.HTTPError as e:
+        logging.warning("SendNotification failed: %s %s", e.code, e.read())
+        return False
+    except Exception as e:
+        logging.warning("SendNotification error: %s", e)
+        return False

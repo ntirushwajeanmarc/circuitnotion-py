@@ -47,14 +47,8 @@ def read_temperature():
     return SensorValue(0.0, "°C")
 
 async def main():
-    # Initialize CircuitNotion
-    CN.begin(
-        host="your-server.com",
-        port=443,
-        path="/ws",
-        api_key="your-api-key-here",
-        microcontroller_name="RaspberryPi-Garage"
-    )
+    # Initialize CircuitNotion (minimal: default host iot.circuitnotion.com)
+    CN.begin("your-api-key-here", "RaspberryPi-Garage")
     
     # Add DS18B20 temperature sensor (read every 10 seconds)
     CN.add_temperature_sensor("DS18B20-001", "Garage", 10.0, read_temperature)

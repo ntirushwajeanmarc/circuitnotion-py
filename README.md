@@ -8,9 +8,11 @@ Python library for connecting Raspberry Pi to the CircuitNotion IoT platform. Co
 
 ## Features
 
-- 🔌 **WebSocket Connection**: Real-time bidirectional communication
+- 🔌 **WebSocket Connection**: Real-time bidirectional communication with CircuitNotion Gate
+- 🚀 **Minimal setup**: `begin(api_key, microcontroller_name)` — host defaults to `iot.circuitnotion.com`
 - 📊 **Sensor Support**: Temperature, humidity, motion, light, and custom sensors
-- 🎛️ **Device Control**: Control GPIO pins remotely through CircuitNotion
+- 🎛️ **Device Control**: Map GPIO pins, receive on/off and optional `data` (e.g. servo angle 0–180)
+- 📧 **Email notifications**: `send_notification(template, **variables)` and `SendNotification()` for alerts
 - 🔄 **Auto-reconnect**: Automatic reconnection on connection loss
 - 📡 **Real-time Updates**: Receive device control commands instantly
 - 🔧 **Easy Integration**: Simple API for quick setup
@@ -38,18 +40,15 @@ pip install circuitnotion[gpio,sensors]
 ```
 
 ## Quick Start
+
+**Minimal setup** — only your API key and device name; host defaults to `iot.circuitnotion.com`:
+
 ```python
 import asyncio
 from circuitnotion import CN, SensorValue
 
-# Initialize
-CN.begin(
-    host="your-server.com",
-    port=443,
-    path="/ws",
-    api_key="your-api-key-here",
-    microcontroller_name="RaspberryPi-01"
-)
+# Initialize (default host/port/path: iot.circuitnotion.com, 443, /api/ws)
+CN.begin("your-api-key-here", "RaspberryPi-01")
 
 # Map a device (relay on GPIO 17)
 CN.map_digital_device("GT-001", 17, "Living Room Light")
@@ -65,7 +64,15 @@ CN.add_temperature_sensor("TEMP-001", "Living Room", 5.0, read_temp)
 asyncio.run(CN.run())
 ```
 
+**Custom server** — use the full form of `begin()`:
+
+```python
+CN.begin("your-server.com", 443, "/api/ws", "your-api-key", "RaspberryPi-01")
+```
+
 ## Examples
+
+In-repo examples: `examples/dht22_example.py`, `examples/ds18b20_example.py`, `examples/motion_example.py`, `examples/servo_example.py`, `examples/notification_example.py`.
 
 ### DHT22 Temperature & Humidity Sensor
 ```python
@@ -91,7 +98,7 @@ def read_humidity():
         return SensorValue(0.0, "%")
 
 async def main():
-    CN.begin("server.com", 443, "/ws", "api-key", "Kitchen-Pi")
+    CN.begin("your-api-key", "Kitchen-Pi")  # or full: CN.begin("server.com", 443, "/api/ws", "api-key", "Kitchen-Pi")
     
     # Add sensors (read every 5 seconds)
     CN.add_temperature_sensor("DHT22-T", "Kitchen", 5.0, read_temperature)
@@ -122,7 +129,7 @@ def read_temperature():
     return SensorValue(temp_c, "°C")
 
 async def main():
-    CN.begin("server.com", 443, "/ws", "api-key", "Garage-Pi")
+    CN.begin("your-api-key", "Garage-Pi")
     CN.add_temperature_sensor("DS18B20", "Garage", 10.0, read_temperature)
     await CN.run()
 
@@ -153,7 +160,7 @@ async def main():
     GPIO.setup(PIR_PIN, GPIO.IN)
     GPIO.add_event_detect(PIR_PIN, GPIO.RISING, callback=pir_callback)
     
-    CN.begin("server.com", 443, "/ws", "api-key", "Entrance-Pi")
+    CN.begin("your-api-key", "Entrance-Pi")
     CN.add_motion_sensor("PIR-001", "Front Door", 2.0, read_motion)
     
     try:
@@ -164,9 +171,108 @@ async def main():
 asyncio.run(main())
 ```
 
+### Servo control (device_control with `data["angle"]`)
+
+When the server sends a device_control for a servo, the payload includes `data` with `angle` (0–180). Use `on_device_control` to receive it and drive your servo:
+
+```python
+import asyncio
+from circuitnotion import CN
+
+# Optional: use a servo library, e.g. gpiozero or RPi.GPIO + PWM
+# from gpiozero import Servo
+# servo = Servo(17)
+
+def on_device_control(device_serial: str, state: str, data: dict):
+    """Handle on/off and servo angle from CircuitNotion."""
+    if data and "angle" in data:
+        angle = int(data["angle"])  # 0–180
+        # servo.value = (angle / 180.0) * 2 - 1   # gpiozero: -1..1
+        # or: my_servo.write(angle)               # other libraries
+        print(f"Servo {device_serial} -> angle {angle}°")
+    else:
+        print(f"Device {device_serial} -> {state}")
+
+async def main():
+    CN.begin("your-api-key", "Smart-Blinds-Pi")
+    CN.on_device_control(on_device_control)
+    # No map_digital_device for servo — drive it in the callback from data["angle"]
+    await CN.run()
+
+asyncio.run(main())
+```
+
+### Email notifications (threshold alert)
+
+Send an email when a sensor exceeds a threshold using `send_notification`. Uses the host and API key from `begin()`:
+
+```python
+import asyncio
+from circuitnotion import CN, SensorValue
+
+THRESHOLD_TEMP = 30.0
+
+def read_temperature():
+    # Your sensor code here
+    return SensorValue(25.5, "°C")
+
+def on_connection(connected: bool):
+    if connected:
+        print("Connected to CircuitNotion")
+
+async def main():
+    CN.begin("your-api-key", "Living-Room-Pi")
+    CN.on_connection(on_connection)
+    
+    # Add temperature sensor (e.g. read every 10 seconds)
+    def read_and_maybe_alert():
+        value = read_temperature()
+        if value.value > THRESHOLD_TEMP:
+            CN.send_notification(
+                "threshold_alert",
+                DeviceName="Living Room",
+                SensorType="temperature",
+                Value=f"{value.value:.1f}",
+                Unit="°C",
+                Threshold=str(THRESHOLD_TEMP),
+                Message="Temperature is above the safe threshold.",
+            )
+        return value
+    
+    CN.add_temperature_sensor("TEMP-001", "Living Room", 10.0, read_and_maybe_alert)
+    await CN.run()
+
+asyncio.run(main())
+```
+
+Standalone `SendNotification` (when you don’t have a client instance):
+
+```python
+from circuitnotion import SendNotification
+
+ok = SendNotification(
+    "iot.circuitnotion.com",
+    "your-api-key",
+    "threshold_alert",
+    DeviceName="Living Room",
+    SensorType="temperature",
+    Value="35",
+    Unit="°C",
+    Threshold="30",
+    Message="Temperature above safe limit.",
+)
+```
+
 ## API Reference
 
 ### Initialization
+
+**Minimal (recommended)** — uses default host `iot.circuitnotion.com`, port 443, path `/api/ws`:
+```python
+CN.begin(api_key, microcontroller_name)
+```
+
+**Full** — for a custom server:
 ```python
 CN.begin(host, port, path, api_key, microcontroller_name, use_ssl=True)
 ```
@@ -195,11 +301,28 @@ CN.disable_sensor(sensor_type, device_serial)
 CN.remove_all_sensors()
 ```
 
+### Email notifications
+```python
+# Using the client (uses stored host and API key)
+CN.send_notification("threshold_alert",
+    DeviceName="Living Room", SensorType="temperature",
+    Value="35", Unit="°C", Threshold="30", Message="Above threshold.")
+
+# Standalone function (pass host and API key)
+from circuitnotion import SendNotification
+SendNotification("iot.circuitnotion.com", "your-api-key", "threshold_alert",
+    DeviceName="Living Room", SensorType="temperature", Value="35", Unit="°C", Threshold="30", Message="Above threshold.")
+```
+Templates: `threshold_alert`, `device_alert`, `custom`.
+
 ### Callbacks
 ```python
-# Device control callback
-def on_device_control(device_serial: str, state: str):
-    print(f"Device {device_serial} -> {state}")
+# Device control callback (device_serial, state, data — data has e.g. "angle" for servos 0-180)
+def on_device_control(device_serial: str, state: str, data: dict):
+    print(f"Device {device_serial} -> {state} data={data}")
+    if "angle" in data:
+        # servo: data["angle"] 0-180
+        pass
 
 CN.on_device_control(on_device_control)
 
@@ -277,6 +400,18 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📖 Docs: [Documentation](https://github.com/yourusername/circuitnotion-py#readme)
 
 ## Changelog
+
+### 1.3.0
+- **Minimal `begin(api_key, microcontroller_name)`** — no need to pass host/port/path; defaults to `iot.circuitnotion.com`, 443, `/api/ws`.
+- **`send_notification(template, **variables)`** — instance method to send email alerts using stored host and API key.
+- **`SendNotification(host, api_key, template, ...)`** — standalone function for email notifications (exported from the package).
+- **Device control** — callback now receives `(device_serial, state, data)`; `data` can contain `angle` (0–180) for servos, `volume`, `muted` for speakers. `control_local_device(serial, state, data=None)` accepts optional `data`.
+- **Connection helpers** — `disconnect()`, `is_connected()`, `get_status()`, `get_status_string()`, `get_uptime()`, `print_diagnostics()`.
+
+### 1.2.0
+- Extended sensor helpers: `add_humidity_sensor`, `add_light_sensor`, `add_motion_sensor`; `enable_sensor`, `disable_sensor`, `remove_all_sensors`.
+- `map_analog_device` for PWM/servo mapping.
+- `auth_error` handling in WebSocket message handler.
 
 ### 1.0.0 (2026-02-08)
 - Initial release

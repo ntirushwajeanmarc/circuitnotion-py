@@ -31,19 +31,14 @@ def read_humidity():
         print(f"DHT22 read error: {e}")
     return SensorValue(0.0, "%")
 
-def on_device_control(serial: str, state: str):
-    """Custom handler for device control"""
-    print(f"Device {serial} changed to {state}")
+def on_device_control(serial: str, state: str, data: dict):
+    """Custom handler for device control (data has e.g. angle for servos)."""
+    data = data or {}
+    print(f"Device {serial} changed to {state}" + (f" data={data}" if data else ""))
 
 async def main():
-    # Initialize CircuitNotion
-    CN.begin(
-        host="your-server.com",
-        port=443,
-        path="/ws",
-        api_key="your-api-key-here",
-        microcontroller_name="RaspberryPi-Kitchen"
-    )
+    # Initialize CircuitNotion (minimal: default host iot.circuitnotion.com)
+    CN.begin("your-api-key-here", "RaspberryPi-Kitchen")
     
     # Map relay to control light (GPIO17)
     CN.map_digital_device("GT-001", 17, "Kitchen Light")

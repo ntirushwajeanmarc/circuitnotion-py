@@ -23,11 +23,11 @@ def read_motion():
     motion_detected = False  # Reset after reading
     return SensorValue(value, "boolean")
 
-def on_device_control(serial: str, state: str):
-    """Handle device control from server"""
-    print(f"Device {serial} set to {state}")
+def on_device_control(serial: str, state: str, data: dict):
+    """Handle device control from server (data may contain e.g. angle for servos)."""
+    data = data or {}
+    print(f"Device {serial} set to {state}" + (f" data={data}" if data else ""))
     if serial == "ALARM-001":
-        # Could trigger an alarm, send notification, etc.
         print(f"Alarm is now {state}")
 
 async def main():
@@ -36,14 +36,8 @@ async def main():
     GPIO.setup(PIR_PIN, GPIO.IN)
     GPIO.add_event_detect(PIR_PIN, GPIO.RISING, callback=pir_callback)
     
-    # Initialize CircuitNotion
-    CN.begin(
-        host="your-server.com",
-        port=443,
-        path="/ws",
-        api_key="your-api-key-here",
-        microcontroller_name="RaspberryPi-Entrance"
-    )
+    # Initialize CircuitNotion (minimal: default host iot.circuitnotion.com)
+    CN.begin("your-api-key-here", "RaspberryPi-Entrance")
     
     # Add motion sensor (check every 2 seconds)
     CN.add_motion_sensor("PIR-001", "Front Door", 2.0, read_motion)
