@@ -90,7 +90,7 @@ class CircuitNotionSensor:
 
 
 class CircuitNotion:
-    VERSION = "1.3.0"
+    VERSION = "1.3.1"
 
     def __init__(self):
         self.host = DEFAULT_HOST
@@ -365,8 +365,21 @@ class CircuitNotion:
         self.log(f"Device control: {device_serial} -> {state}" + (f" data={data}" if data else ""))
 
     async def _sensor_loop(self):
-        """Continuously read and send sensor data"""
-        while self.status == ConnectionStatus.AUTHENTICATED:
+        """Continuously read and send sensor data.
+
+        Important: connect() starts this task before auth_success arrives.
+        So we must wait until AUTHENTICATED instead of exiting immediately.
+        Also ensure the loop exits when a new websocket replaces the old one.
+        """
+        ws = self.ws
+        while True:
+            # Stop if we've reconnected and have a new ws instance (or disconnected)
+            if self.ws is None or self.ws is not ws:
+                return
+            if self.status != ConnectionStatus.AUTHENTICATED:
+                await asyncio.sleep(0.2)
+                continue
+
             current_time = time.time()
             for sensor in self.sensors:
                 if sensor.should_read(current_time):
@@ -398,13 +411,22 @@ class CircuitNotion:
         self.log(f"Sent {sensor.type} reading: {value.value} {value.unit}")
 
     async def _ping_loop(self):
-        """Send periodic ping to keep connection alive"""
-        while self.status == ConnectionStatus.AUTHENTICATED:
+        """Send periodic ping to keep connection alive.
+
+        Waits for AUTHENTICATED; exits if websocket changes on reconnect.
+        """
+        ws = self.ws
+        while True:
+            if self.ws is None or self.ws is not ws:
+                return
+            if self.status != ConnectionStatus.AUTHENTICATED:
+                await asyncio.sleep(0.5)
+                continue
             await asyncio.sleep(30)
             try:
                 await self.ws.send(json.dumps({"type": "ping"}))
             except Exception:
-                break
+                return
 
     def log(self, message: str):
         """Log a message"""
@@ -492,6 +514,7 @@ def SendNotification(
     body: Optional[str] = None,
     port: Optional[int] = None,
     use_ssl: bool = True,
+    user_agent: Optional[str] = None,
     **variables: str,
 ) -> bool:
     """
@@ -540,12 +563,18 @@ def SendNotification(
     if body:
         payload["body"] = body
     data = json.dumps(payload).encode("utf-8")
+
+    # Cloudflare can block requests that look like "generic automation" (e.g. default urllib UA).
+    # Use a browser-like UA by default to avoid false positives in edge security rules.
+    ua = user_agent or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
     req = urllib.request.Request(
         url,
         data=data,
         headers={
             "Content-Type": "application/json",
+            "Accept": "application/json",
             "X-API-Key": api_key,
+            "User-Agent": ua,
         },
         method="POST",
     )
