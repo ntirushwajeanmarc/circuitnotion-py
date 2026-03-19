@@ -12,6 +12,7 @@ Python library for connecting Raspberry Pi to the CircuitNotion IoT platform. Co
 - 🚀 **Minimal setup**: `begin(api_key, microcontroller_name)` — host defaults to `iot.circuitnotion.com`
 - 📊 **Sensor Support**: Temperature, humidity, motion, light, and custom sensors
 - 🎛️ **Device Control**: Map GPIO pins, receive on/off and optional `data` (e.g. servo angle 0–180)
+- 🟢 **Physical switch sync**: Report local button changes so server/dashboard state stays correct
 - 📧 **Email notifications**: `send_notification(template, **variables)` and `SendNotification()` for alerts
 - 🔄 **Auto-reconnect**: Automatic reconnection on connection loss
 - 📡 **Real-time Updates**: Receive device control commands instantly
@@ -72,7 +73,7 @@ CN.begin("your-server.com", 443, "/api/ws", "your-api-key", "RaspberryPi-01")
 
 ## Examples
 
-In-repo examples: `examples/dht22_example.py`, `examples/ds18b20_example.py`, `examples/motion_example.py`, `examples/servo_example.py`, `examples/notification_example.py`.
+In-repo examples: `examples/dht22_example.py`, `examples/ds18b20_example.py`, `examples/motion_example.py`, `examples/servo_example.py`, `examples/notification_example.py`, `examples/physical_switch_example.py`.
 
 ### DHT22 Temperature & Humidity Sensor
 ```python
@@ -339,6 +340,22 @@ def on_log(message: str):
 CN.on_log(on_log)
 ```
 
+### Physical state callback reporting
+```python
+# In a GPIO callback (thread-safe helper):
+CN.report_device_state_change_from_callback(
+    "LIGHT-001",
+    "on",                    # or "off"
+    source="physical_button",
+    metadata={"pin": "23"},
+)
+
+# In async code:
+await CN.report_device_state_change("LIGHT-001", "off")
+```
+
+Use this whenever a physical button/toggle changes relay state locally, so Gate updates DB state and all app tabs/microcontrollers stay in sync.
+
 ### SensorValue
 ```python
 from circuitnotion import SensorValue
@@ -400,6 +417,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📖 Docs: [Documentation](https://github.com/yourusername/circuitnotion-py#readme)
 
 ## Changelog
+
+### 1.4.0
+- Added physical switch sync helpers: `await report_device_state_change(...)` and thread-safe `report_device_state_change_from_callback(...)` for GPIO interrupts/callbacks.
+- Added `examples/physical_switch_example.py` showing end-to-end local button toggle + server state sync.
 
 ### 1.3.0
 - **Minimal `begin(api_key, microcontroller_name)`** — no need to pass host/port/path; defaults to `iot.circuitnotion.com`, 443, `/api/ws`.

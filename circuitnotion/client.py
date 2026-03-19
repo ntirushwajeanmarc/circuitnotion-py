@@ -90,7 +90,7 @@ class CircuitNotionSensor:
 
 
 class CircuitNotion:
-    VERSION = "1.3.1"
+    VERSION = "1.4.0"
 
     def __init__(self):
         self.host = DEFAULT_HOST
@@ -110,6 +110,7 @@ class CircuitNotion:
         self.device_control_callback: Optional[Callable[[str, str, Optional[Dict[str, str]]], None]] = None
         self.log_callback: Optional[Callable[[str], None]] = None
         self.connection_callback: Optional[Callable[[bool], None]] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         
         self.total_sensor_readings = 0
         self.total_messages_received = 0
@@ -267,6 +268,7 @@ class CircuitNotion:
         
         try:
             self.ws = await websockets.connect(uri)
+            self._event_loop = asyncio.get_running_loop()
             self.status = ConnectionStatus.CONNECTED
             self.connection_start_time = time.time()
             self.log("WebSocket Connected")
@@ -288,6 +290,7 @@ class CircuitNotion:
             await self.ws.close()
         self.status = ConnectionStatus.DISCONNECTED
         self.is_authenticated = False
+        self._event_loop = None
         self.log("Disconnected from CircuitNotion server")
         if self.connection_callback:
             self.connection_callback(False)
@@ -434,6 +437,61 @@ class CircuitNotion:
             self.log_callback(message)
         else:
             print(f"[CircuitNotion] {message}")
+
+    async def report_device_state_change(
+        self,
+        device_serial: str,
+        state: str,
+        source: str = "physical_button",
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> bool:
+        """Report a local/physical state change so Gate updates DB and syncs all clients."""
+        if not self.ws or self.status != ConnectionStatus.AUTHENTICATED:
+            self.log("Cannot report state change: not connected/authenticated")
+            return False
+
+        normalized = state.strip().lower()
+        if normalized not in {"on", "off"}:
+            self.log("Cannot report state change: state must be 'on' or 'off'")
+            return False
+
+        msg = {
+            "type": "physical_state_changed",
+            "device_serial": device_serial,
+            "state": normalized,
+            "source": source,
+        }
+        if metadata:
+            msg["data"] = {k: str(v) for k, v in metadata.items()}
+
+        try:
+            await self.ws.send(json.dumps(msg))
+            self.log(f"Reported physical state change: {device_serial} -> {normalized}")
+            return True
+        except Exception as e:
+            self.log(f"Failed to report physical state change: {e}")
+            return False
+
+    def report_device_state_change_from_callback(
+        self,
+        device_serial: str,
+        state: str,
+        source: str = "physical_button",
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> bool:
+        """Thread-safe helper for GPIO callbacks (RPi event callbacks run outside asyncio)."""
+        if not self._event_loop:
+            self.log("Cannot report state change: event loop not ready")
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.report_device_state_change(device_serial, state, source, metadata),
+                self._event_loop,
+            )
+            return True
+        except Exception as e:
+            self.log(f"Failed to schedule state-change report: {e}")
+            return False
 
     def send_notification(
         self,
